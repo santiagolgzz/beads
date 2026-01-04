@@ -709,6 +709,28 @@ async def beads_reopen_issue(
     return await client.reopen(params)
 
 
+async def beads_delete_issues(
+    issue_ids: Annotated[list[str], "Issue IDs to delete (e.g., ['bd-1', 'bd-2'])"],
+    force: Annotated[bool, "Skip safety checks and delete even with dependents"] = False,
+    hard: Annotated[bool, "Permanently delete (bypass tombstones, use with caution)"] = False,
+) -> dict[str, Any]:
+    """Delete one or more issues permanently.
+
+    This is a destructive operation. By default, creates tombstones.
+    Use hard=True to permanently delete (bypasses sync safety).
+
+    Args:
+        issue_ids: List of issue IDs to delete
+        force: If True, delete even if issues have dependents
+        hard: If True, permanently delete without tombstones (dangerous)
+
+    Returns:
+        Dict with deleted count and any warnings
+    """
+    client = await _get_client()
+    return await client.delete_issues(issue_ids=issue_ids, force=force, hard=hard)
+
+
 async def beads_add_dependency(
     issue_id: Annotated[str, "Issue that has the dependency (e.g., bd-2)"],
     depends_on_id: Annotated[str, "Issue that issue_id depends on (e.g., bd-1)"],

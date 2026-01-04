@@ -43,6 +43,7 @@ from beads_mcp.tools import (
     beads_blocked,
     beads_close_issue,
     beads_create_issue,
+    beads_delete_issues,
     beads_detect_pollution,
     beads_get_schema_info,
     beads_init,
@@ -850,7 +851,7 @@ async def ready_work(
 
 @mcp.tool(
     name="list",
-    description="List all issues with optional filters. When status='blocked', returns BlockedIssue with blocked_by info.",
+    description="List all issues with optional filters. When status='blocked', returns BlockedIssue with blocked_by info. Use all=True to ignore status filter.",
     output_schema=None,
 )
 @with_workspace
@@ -863,6 +864,7 @@ async def list_issues(
     labels_any: list[str] | None = None,
     query: str | None = None,
     unassigned: bool = False,
+    all: bool = False,
     limit: int = 20,
     workspace_root: str | None = None,
     brief: bool = False,
@@ -880,6 +882,7 @@ async def list_issues(
         labels_any: Filter by labels (OR: must have at least one)
         query: Search in title (case-insensitive substring)
         unassigned: Filter to only unassigned issues
+        all: If True, ignore status filter and show all issues (mirrors bd list --all)
         limit: Maximum issues to return (1-100, default 20)
         workspace_root: Workspace path override
         brief: If True, return only {id, title, status} (~97% smaller)
@@ -889,8 +892,11 @@ async def list_issues(
     Returns minimal issue format to reduce context usage by ~80%.
     Use show(issue_id) for full details including dependencies.
     """
+    # If all=True, override status to None to get all issues
+    effective_status = None if all else status
+
     issues = await beads_list_issues(
-        status=status,
+        status=effective_status,
         priority=priority,
         issue_type=issue_type,
         assignee=assignee,
@@ -1127,6 +1133,33 @@ async def reopen_issue(
     if brief:
         return [OperationResult(id=i.id, action="reopened", message=reason) for i in issues]
     return issues
+
+
+@mcp.tool(
+    name="delete",
+    description="Delete one or more issues permanently. DESTRUCTIVE OPERATION. Creates tombstones by default. Use hard=True to bypass tombstones (dangerous).",
+    output_schema=None,
+)
+@with_workspace
+@require_context
+async def delete_issues(
+    issue_ids: list[str],
+    force: bool = False,
+    hard: bool = False,
+    workspace_root: str | None = None,
+) -> dict[str, Any]:
+    """Delete one or more issues permanently.
+
+    Args:
+        issue_ids: List of issue IDs to delete
+        force: Skip safety checks and delete even with dependents
+        hard: Permanently delete (bypass tombstones, use with caution)
+        workspace_root: Workspace path override
+
+    Returns:
+        Dict with deletion results
+    """
+    return await beads_delete_issues(issue_ids=issue_ids, force=force, hard=hard)
 
 
 @mcp.tool(

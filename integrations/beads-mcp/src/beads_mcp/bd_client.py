@@ -112,6 +112,20 @@ class BdClientBase(ABC):
         pass
 
     @abstractmethod
+    async def delete_issues(self, issue_ids: List[str], force: bool = False, hard: bool = False) -> dict[str, Any]:
+        """Delete one or more issues.
+
+        Args:
+            issue_ids: List of issue IDs to delete
+            force: Skip safety checks and delete even with dependents
+            hard: Permanently delete (bypass tombstones)
+
+        Returns:
+            Dict with deletion results
+        """
+        pass
+
+    @abstractmethod
     async def add_dependency(self, params: AddDependencyParams) -> None:
         """Add a dependency between issues."""
         pass
@@ -594,6 +608,30 @@ class BdCliClient(BdClientBase):
             raise BdCommandError(f"Invalid response for reopen {params.issue_ids}")
 
         return [Issue.model_validate(issue) for issue in data]
+
+    async def delete_issues(self, issue_ids: list[str], force: bool = False, hard: bool = False) -> dict[str, Any]:
+        """Delete one or more issues.
+
+        Args:
+            issue_ids: List of issue IDs to delete
+            force: Skip safety checks and delete even with dependents
+            hard: Permanently delete (bypass tombstones)
+
+        Returns:
+            Dict with deletion results
+        """
+        args = ["delete", *issue_ids]
+
+        if force:
+            args.append("--force")
+        if hard:
+            args.append("--hard")
+
+        data = await self._run_command(*args)
+        if not isinstance(data, dict):
+            raise BdCommandError(f"Invalid response for delete {issue_ids}")
+
+        return data
 
     async def add_dependency(self, params: AddDependencyParams) -> None:
         """Add a dependency between issues.
