@@ -49,7 +49,7 @@ class BdNotFoundError(BdError):
             f"bd CLI not found at: {attempted_path}\n\n"
             "The beads Claude Code plugin requires the bd CLI to be installed separately.\n\n"
             "Install bd CLI:\n"
-            "  curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash\n\n"
+            "  curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/install.sh | bash\n\n"
             "Or visit: https://github.com/steveyegge/beads#installation\n\n"
             "After installation, restart Claude Code to reload the MCP server."
         )
@@ -317,6 +317,20 @@ class BdCliClient(BdClientBase):
             result: object = json.loads(stdout_str)
             return result
         except json.JSONDecodeError as e:
+            # Some bd commands (like 'doctor --deep') may output progress messages
+            # before JSON. Try to find and parse just the JSON part.
+            json_start = stdout_str.find('{')
+            if json_start == -1:
+                json_start = stdout_str.find('[')
+
+            if json_start > 0:
+                # Skip non-JSON prefix and try parsing again
+                try:
+                    result: object = json.loads(stdout_str[json_start:])
+                    return result
+                except json.JSONDecodeError:
+                    pass
+
             raise BdCommandError(
                 f"Failed to parse bd JSON output: {e}",
                 stderr=stdout_str,
@@ -363,7 +377,7 @@ class BdCliClient(BdClientBase):
         if version < min_version:
             min_ver_str = ".".join(str(x) for x in min_version)
             cur_ver_str = ".".join(str(x) for x in version)
-            install_cmd = "curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash"
+            install_cmd = "curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/install.sh | bash"
             raise BdVersionError(
                 f"bd version {cur_ver_str} is too old. "
                 f"This MCP server requires bd >= {min_ver_str}. "
@@ -665,6 +679,11 @@ class BdCliClient(BdClientBase):
         if not isinstance(data, dict):
             raise BdCommandError("Invalid response for stats")
 
+        # bd stats returns nested structure: {"summary": {...}}
+        # Extract the summary dict for validation
+        if "summary" in data:
+            return Stats.model_validate(data["summary"])
+
         return Stats.model_validate(data)
 
     async def blocked(self, params: BlockedParams | None = None) -> list[BlockedIssue]:
@@ -718,13 +737,13 @@ class BdCliClient(BdClientBase):
         Returns:
             Dict with orphans_found, orphans list, and fixed count if fix=True
         """
-        args = ["repair-deps"]
-        if fix:
-            args.append("--fix")
+        args = ["repair", "--json"]
+        if not fix:
+            args.append("--dry-run")
 
         data = await self._run_command(*args)
         if not isinstance(data, dict):
-            raise BdCommandError("Invalid response for repair-deps")
+            raise BdCommandError("Invalid response for repair")
         return data
 
     async def detect_pollution(self, clean: bool = False) -> dict[str, Any]:
@@ -736,34 +755,41 @@ class BdCliClient(BdClientBase):
         Returns:
             Dict with detected test issues and deleted count if clean=True
         """
-        args = ["detect-pollution"]
+        args = ["doctor", "--check=pollution", "--json"]
         if clean:
             args.extend(["--clean", "--yes"])
 
         data = await self._run_command(*args)
         if not isinstance(data, dict):
-            raise BdCommandError("Invalid response for detect-pollution")
+            raise BdCommandError("Invalid response for doctor --check=pollution")
         return data
 
     async def validate(self, checks: str | None = None, fix_all: bool = False) -> dict[str, Any]:
-        """Run database validation checks.
+        """Run database validation checks using bd doctor.
 
         Args:
-            checks: Comma-separated list of checks (orphans,duplicates,pollution,conflicts)
+            checks: Specific check to run (e.g., 'pollution')
             fix_all: If True, auto-fix all fixable issues
 
         Returns:
-            Dict with validation results for each check
+            Dict with validation results
         """
-        args = ["validate"]
+        args = ["doctor", "--json"]
+
+        # If specific check requested, use --check flag
         if checks:
-            args.extend(["--checks", checks])
+            args.extend(["--check", checks])
+
+        # Add deep validation if no specific check
+        if not checks:
+            args.append("--deep")
+
         if fix_all:
-            args.append("--fix-all")
+            args.extend(["--fix", "--yes"])
 
         data = await self._run_command(*args)
         if not isinstance(data, dict):
-            raise BdCommandError("Invalid response for validate")
+            raise BdCommandError("Invalid response for doctor")
         return data
 
     async def init(self, params: InitParams | None = None) -> str:

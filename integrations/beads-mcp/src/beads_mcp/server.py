@@ -56,6 +56,7 @@ from beads_mcp.tools import (
     beads_stats,
     beads_update_issue,
     beads_validate,
+    clear_workspace_cache,  # Clear auto-detection cache
     current_workspace,  # ContextVar for per-request workspace routing
 )
 
@@ -185,6 +186,12 @@ def with_workspace(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable
     and sets current_workspace ContextVar for the request duration.
     Falls back to persistent context or BEADS_WORKING_DIR if workspace_root not provided.
 
+    Auto-detection is handled by _get_client() in tools.py using cascading strategy:
+    1. current_workspace ContextVar (set by this decorator)
+    2. BEADS_WORKING_DIR env var
+    3. Walk up from CWD looking for .beads/*.db
+    4. Broad auto-detection (config file, common directories)
+
     This enables per-request workspace routing for multi-project support.
     """
     @wraps(func)
@@ -193,6 +200,7 @@ def with_workspace(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable
         workspace_root = kwargs.get('workspace_root')
 
         # Determine workspace: parameter > persistent context > env > None
+        # (None will trigger auto-detection in _get_client())
         workspace = (
             workspace_root
             or _workspace_context.get("BEADS_WORKING_DIR")
@@ -613,6 +621,9 @@ async def _context_set(workspace_root: str) -> str:
             f"  This may indicate a slow filesystem or git configuration issue.\n"
             f"  Please ensure the path is correct and git is responsive."
         )
+
+    # Clear auto-detection cache when user explicitly sets workspace
+    clear_workspace_cache()
 
     # Store in persistent context (survives across MCP tool calls)
     _workspace_context["BEADS_WORKING_DIR"] = resolved_root
@@ -1189,12 +1200,12 @@ async def blocked(
     name="admin",
     description="""Administrative and diagnostic operations.
 Actions:
-- validate: Run database health checks (checks=orphans,duplicates,pollution,conflicts)
-- repair: Fix orphaned dependency references (fix=True to apply)
+- validate: Run database health checks using bd doctor (checks='pollution' for specific check, fix_all=True to auto-fix)
+- repair: Fix orphaned dependency references using bd repair (fix=True to apply, False for dry-run)
 - schema: Show database schema info
 - debug: Show environment and working directory info
 - migration: Get migration plan and database state
-- pollution: Detect/clean test issues (clean=True to delete)""",
+- pollution: Detect/clean test issues using bd doctor --check=pollution (clean=True to delete)""",
 )
 @with_workspace
 async def admin(
@@ -1205,7 +1216,13 @@ async def admin(
     clean: bool = False,
     workspace_root: str | None = None,
 ) -> dict[str, Any] | str:
-    """Administrative and diagnostic operations."""
+    """Administrative and diagnostic operations.
+
+    Uses modern bd commands:
+    - validate → bd doctor [--deep | --check=<check>] [--fix --yes]
+    - repair → bd repair [--dry-run] --json
+    - pollution → bd doctor --check=pollution [--clean --yes] --json
+    """
 
     if action == "validate":
         return await beads_validate(checks=checks, fix_all=fix_all)

@@ -1,17 +1,23 @@
 """MCP tools for beads issue tracker."""
 
 import asyncio
+import glob
+import json
 import logging
 import os
 import subprocess
 import sys
 from contextvars import ContextVar
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Any, TYPE_CHECKING
 
 from .bd_client import create_bd_client, BdClientBase, BdError
 
 logger = logging.getLogger(__name__)
+
+# Cache for auto-detected workspace (avoids repeated filesystem scans)
+_cached_auto_workspace: str | None = None
 
 if TYPE_CHECKING:
     from typing import List
@@ -33,6 +39,155 @@ from .models import (
     Stats,
     UpdateIssueParams,
 )
+
+# =============================================================================
+# WORKSPACE AUTO-DETECTION (for Windows/Antigravity environments)
+# =============================================================================
+
+def _load_workspaces_config() -> dict[str, Any]:
+    """Load workspaces config from ~/.beads/workspaces.json.
+
+    Expected format:
+    {
+        "workspaces": [
+            {"path": "C:/Code/project-a", "name": "project-a"},
+            {"path": "C:/Code/project-b", "name": "project-b"}
+        ],
+        "default": "C:/Code/project-a"  # Optional: preferred default
+    }
+    """
+    config_path = Path.home() / ".beads" / "workspaces.json"
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.debug(f"Failed to load workspaces config: {e}")
+    return {}
+
+
+def _find_beads_workspaces_in_dirs(search_dirs: list[str]) -> list[str]:
+    """Search for directories containing .beads/ folders.
+
+    Args:
+        search_dirs: List of parent directories to search
+
+    Returns:
+        List of absolute paths to directories containing .beads/
+    """
+    found = []
+    for search_dir in search_dirs:
+        search_path = Path(search_dir)
+        if not search_path.exists():
+            continue
+
+        # Look for .beads directories up to 3 levels deep
+        for depth in range(1, 4):
+            pattern = str(search_path / ("*/" * depth + ".beads"))
+            for beads_dir in glob.glob(pattern):
+                workspace = str(Path(beads_dir).parent.resolve())
+                if workspace not in found:
+                    found.append(workspace)
+
+    return found
+
+
+def _auto_detect_workspace_broad() -> str | None:
+    """Auto-detect workspace using broad search strategies.
+
+    Tries multiple strategies:
+    1. Check BEADS_WORKING_DIR env var
+    2. Check ~/.beads/workspaces.json config file
+    3. Scan common project directories for .beads/ folders
+
+    Returns:
+        Detected workspace path, or None if not found
+    """
+    global _cached_auto_workspace
+
+    # Use cache if available
+    if _cached_auto_workspace:
+        return _cached_auto_workspace
+
+    # Strategy 1: Environment variable (most explicit)
+    if os.environ.get("BEADS_WORKING_DIR"):
+        workspace = os.environ["BEADS_WORKING_DIR"]
+        logger.info(f"[beads-mcp] Using workspace from BEADS_WORKING_DIR: {workspace}")
+        _cached_auto_workspace = workspace
+        return workspace
+
+    # Strategy 2: Workspaces config file
+    config = _load_workspaces_config()
+    if config.get("default"):
+        workspace = config["default"]
+        if Path(workspace).exists() and (Path(workspace) / ".beads").exists():
+            logger.info(f"[beads-mcp] Using default workspace from config: {workspace}")
+            _cached_auto_workspace = workspace
+            return workspace
+
+    # If config has workspaces, use the first valid one
+    for ws in config.get("workspaces", []):
+        ws_path = ws.get("path")
+        if ws_path and Path(ws_path).exists() and (Path(ws_path) / ".beads").exists():
+            logger.info(f"[beads-mcp] Using workspace from config: {ws_path}")
+            _cached_auto_workspace = ws_path
+            return ws_path
+
+    # Strategy 3: Scan common project directories
+    home = Path.home()
+    common_dirs = [
+        str(home / "Code"),
+        str(home / "Projects"),
+        str(home / "repos"),
+        str(home / "dev"),
+        str(home / "Documents" / "Code"),
+        str(home / "Documents" / "Projects"),
+        "C:\\Code",
+        "D:\\Code",
+        "C:\\Projects",
+        "D:\\Projects",
+    ]
+
+    # Filter to existing directories
+    existing_dirs = [d for d in common_dirs if Path(d).exists()]
+
+    if existing_dirs:
+        found_workspaces = _find_beads_workspaces_in_dirs(existing_dirs)
+
+        if found_workspaces:
+            # If only one workspace found, use it
+            if len(found_workspaces) == 1:
+                workspace = found_workspaces[0]
+                logger.info(f"[beads-mcp] Auto-detected single workspace: {workspace}")
+                _cached_auto_workspace = workspace
+                return workspace
+
+            # Multiple workspaces - pick most recently modified
+            def get_mtime(path: str) -> float:
+                try:
+                    db_files = glob.glob(os.path.join(path, ".beads", "*.db"))
+                    if db_files:
+                        return max(os.path.getmtime(f) for f in db_files)
+                    return os.path.getmtime(os.path.join(path, ".beads"))
+                except Exception:
+                    return 0
+
+            found_workspaces.sort(key=get_mtime, reverse=True)
+            workspace = found_workspaces[0]
+            logger.info(f"[beads-mcp] Auto-detected workspace (most recent): {workspace}")
+            logger.info(f"[beads-mcp] Other workspaces found: {found_workspaces[1:5]}")
+            _cached_auto_workspace = workspace
+            return workspace
+
+    logger.warning("[beads-mcp] Could not auto-detect workspace. Call context(workspace_root='...') first.")
+    return None
+
+
+def clear_workspace_cache() -> None:
+    """Clear the cached workspace (call when user explicitly sets workspace)."""
+    global _cached_auto_workspace
+    _cached_auto_workspace = None
+
 
 # ContextVar for request-scoped workspace routing
 current_workspace: ContextVar[str | None] = ContextVar('workspace', default=None)
@@ -283,16 +438,17 @@ async def _reconnect_client(canonical: str, max_retries: int = 3) -> BdClientBas
 
 async def _get_client() -> BdClientBase:
     """Get a BdClient instance for the current workspace.
-    
+
     Uses connection pool to manage per-project daemon sockets.
-    Workspace is auto-detected using the same logic as CLI:
+    Workspace is auto-detected using cascading strategy:
     1. current_workspace ContextVar (from workspace_root parameter)
     2. BEADS_WORKING_DIR environment variable
     3. Walk up from CWD looking for .beads/*.db
-    
+    4. Broad auto-detection (config file, common directories)
+
     Performs health check before returning cached client.
     On failure, drops from pool and attempts reconnection with exponential backoff.
-    
+
     Performs version check on first connection to each workspace.
     Uses daemon client if available, falls back to CLI client.
 
@@ -302,21 +458,26 @@ async def _get_client() -> BdClientBase:
     Raises:
         BdError: If no workspace found, or bd is not installed, or version is incompatible
     """
-    # Determine workspace using standard search order (matches Go CLI)
+    # Determine workspace using cascading strategy
     workspace = current_workspace.get() or os.environ.get("BEADS_WORKING_DIR")
-    
-    # Auto-detect from CWD if not explicitly set (NEW!)
+
+    # Auto-detect from CWD if not explicitly set
     if not workspace:
         workspace = _find_beads_db_in_tree()
         if workspace:
             logger.debug(f"Auto-detected workspace from CWD: {workspace}")
-    
+
+    # Try broad auto-detection (for Windows/Antigravity environments)
+    if not workspace:
+        workspace = _auto_detect_workspace_broad()
+
     if not workspace:
         raise BdError(
             "No beads workspace found. Either:\n"
             "  1. Call context(workspace_root=\"/path/to/project\"), OR\n"
             "  2. Run from a directory containing .beads/, OR\n"
-            "  3. Set BEADS_WORKING_DIR environment variable"
+            "  3. Set BEADS_WORKING_DIR environment variable, OR\n"
+            "  4. Create ~/.beads/workspaces.json config file"
         )
     
     # Canonicalize path to handle symlinks and deduplicate connections
