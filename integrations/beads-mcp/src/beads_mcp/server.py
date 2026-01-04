@@ -320,12 +320,13 @@ async def get_quickstart() -> str:
 # Tool metadata for discovery (lightweight - just names and brief descriptions)
 _TOOL_CATALOG = {
     "ready": "Find tasks ready to work on (no blockers)",
-    "list": "List issues with filters (status, priority, type)",
+    "list": "List issues with filters (status, priority, type, all=true for all statuses)",
     "show": "Show full details for a specific issue",
-    "create": "Create a new issue (bug, feature, task, epic)",
+    "create": "Create a new issue (supports custom id for migrations)",
     "update": "Update issue status, priority, or assignee",
     "close": "Close/complete an issue",
     "reopen": "Reopen closed issues",
+    "delete": "Delete issues permanently (with safety controls)",
     "dep": "Add dependency between issues",
     "stats": "Get issue statistics",
     "blocked": "Show blocked issues and what blocks them",
@@ -400,6 +401,7 @@ async def get_tool_info(tool_name: str) -> dict[str, Any]:
                 "labels_any": "list[str] (optional) - OR filter: must have at least one",
                 "query": "str (optional) - Search in title (case-insensitive)",
                 "unassigned": "bool (default false) - Only unassigned issues",
+                "all": "bool (default false) - IMPORTANT: Ignore status filter, show ALL issues (mirrors bd list --all)",
                 "limit": "int (1-100, default 20)",
                 "brief": "bool (default false) - Return only {id, title, status, priority}",
                 "fields": "list[str] (optional) - Custom field projection",
@@ -407,7 +409,7 @@ async def get_tool_info(tool_name: str) -> dict[str, Any]:
                 "workspace_root": "str (optional)"
             },
             "returns": "List of issues (compacted if >20 results)",
-            "example": "list(status='open', labels=['bug'], query='auth')"
+            "example": "list(status='open', labels=['bug'], query='auth') OR list(all=True, limit=50)"
         },
         "show": {
             "name": "show",
@@ -425,20 +427,24 @@ async def get_tool_info(tool_name: str) -> dict[str, Any]:
         },
         "create": {
             "name": "create",
-            "description": "Create a new issue",
+            "description": "Create a new issue (supports custom IDs for migrations/syncing)",
             "parameters": {
                 "title": "str (required)",
                 "description": "str (default '')",
+                "design": "str (optional) - Technical design/approach",
+                "acceptance": "str (optional) - Acceptance criteria",
+                "external_ref": "str (optional) - External reference/link",
                 "priority": "int 0-4 (default 2)",
                 "issue_type": "bug|feature|task|epic|chore (default task)",
                 "assignee": "str (optional)",
                 "labels": "list[str] (optional)",
+                "id": "str (optional) - IMPORTANT: Set custom ID for migrations (e.g., 'kerp-feat-123')",
                 "deps": "list[str] (optional) - dependency IDs",
                 "brief": "bool (default true) - Return OperationResult instead of full Issue",
                 "workspace_root": "str (optional)"
             },
             "returns": "OperationResult {id, action} or full Issue if brief=False",
-            "example": "create(title='Fix auth bug', priority=1, issue_type='bug')"
+            "example": "create(title='Fix auth bug', priority=1, issue_type='bug') OR create(id='kerp-feat-1', title='Custom ID issue')"
         },
         "update": {
             "name": "update",
@@ -479,6 +485,19 @@ async def get_tool_info(tool_name: str) -> dict[str, Any]:
             },
             "returns": "List of OperationResult or full Issues if brief=False",
             "example": "reopen(issue_ids=['bd-a1b2'], reason='Need more work')"
+        },
+        "delete": {
+            "name": "delete",
+            "description": "Delete one or more issues permanently (DESTRUCTIVE)",
+            "parameters": {
+                "issue_ids": "list[str] (required) - IDs to delete",
+                "force": "bool (default false) - Skip safety checks, delete even with dependents",
+                "hard": "bool (default false) - DANGEROUS: Permanently delete, bypass tombstones (use with extreme caution)",
+                "workspace_root": "str (optional)"
+            },
+            "returns": "Dict with deletion results and warnings",
+            "example": "delete(issue_ids=['bd-test-1', 'bd-test-2']) OR delete(issue_ids=['bd-1'], force=True, hard=True)",
+            "warning": "DESTRUCTIVE OPERATION. Creates tombstones by default for sync safety. Only use hard=True when absolutely certain."
         },
         "dep": {
             "name": "dep",
