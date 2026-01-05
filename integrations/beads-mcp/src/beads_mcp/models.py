@@ -153,6 +153,7 @@ class CreateIssueParams(BaseModel):
     description: str = ""
     design: str | None = None
     acceptance: str | None = None
+    notes: str | None = None
     external_ref: str | None = None
     priority: int = Field(default=2, ge=0, le=4)
     issue_type: IssueType = "task"

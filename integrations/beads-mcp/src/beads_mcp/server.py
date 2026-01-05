@@ -433,6 +433,7 @@ async def get_tool_info(tool_name: str) -> dict[str, Any]:
                 "description": "str (default '')",
                 "design": "str (optional) - Technical design/approach",
                 "acceptance": "str (optional) - Acceptance criteria",
+                "notes": "str (optional) - Additional notes (context, discoveries, implementation hints)",
                 "external_ref": "str (optional) - External reference/link",
                 "priority": "int 0-4 (default 2)",
                 "issue_type": "bug|feature|task|epic|chore (default task)",
@@ -1003,7 +1004,7 @@ async def show_issue(
 @mcp.tool(
     name="create",
     description="""Create a new issue (bug, feature, task, epic, or chore) with optional design,
-acceptance criteria, and dependencies.""",
+acceptance criteria, notes, and dependencies.""",
     output_schema=None,
 )
 @with_workspace
@@ -1013,6 +1014,7 @@ async def create_issue(
     description: str = "",
     design: str | None = None,
     acceptance: str | None = None,
+    notes: str | None = None,
     external_ref: str | None = None,
     priority: int = 2,
     issue_type: IssueType = "task",
@@ -1033,6 +1035,7 @@ async def create_issue(
         description=description,
         design=design,
         acceptance=acceptance,
+        notes=notes,
         external_ref=external_ref,
         priority=priority,
         issue_type=issue_type,

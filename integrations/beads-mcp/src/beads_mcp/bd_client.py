@@ -513,6 +513,8 @@ class BdCliClient(BdClientBase):
             args.extend(["--design", params.design])
         if params.acceptance:
             args.extend(["--acceptance", params.acceptance])
+        if params.notes:
+            args.extend(["--notes", params.notes])
         if params.external_ref:
             args.extend(["--external-ref", params.external_ref])
         if params.assignee:
